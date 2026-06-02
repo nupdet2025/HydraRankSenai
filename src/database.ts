@@ -50,9 +50,34 @@ export function getSupabaseConfig() {
   };
 }
 
+export function isValidSupabaseConfig(url: string, key: string): boolean {
+  if (!url || !key) return false;
+  const cleanUrl = url.trim().toLowerCase();
+  const cleanKey = key.trim().toLowerCase();
+  
+  if (
+    cleanUrl.includes('your-supabase-project-url') ||
+    cleanUrl.includes('placeholder') ||
+    cleanUrl.includes('example.com') ||
+    !cleanUrl.startsWith('http')
+  ) {
+    return false;
+  }
+  
+  if (
+    cleanKey.includes('your-supabase-anon-key') ||
+    cleanKey.includes('placeholder') ||
+    cleanKey.length < 20
+  ) {
+    return false;
+  }
+  
+  return true;
+}
+
 export function isSupabaseActive(): boolean {
   const { url, key } = getSupabaseConfig();
-  return !!(url && key);
+  return isValidSupabaseConfig(url, key);
 }
 
 // Lazy Supabase client creation
@@ -61,7 +86,7 @@ let currentConfigHash = '';
 
 function getSupabase() {
   const { url, key } = getSupabaseConfig();
-  if (!url || !key) {
+  if (!isValidSupabaseConfig(url, key)) {
     return null;
   }
   
