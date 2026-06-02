@@ -23,6 +23,20 @@ import {
 } from 'lucide-react';
 import { UserProfile, WaterLog, RankingItem, RankingPeriod } from './types';
 import WaterCircle from './components/WaterCircle';
+import {
+  getUserByEmail,
+  saveUser,
+  addWaterLog,
+  deleteWaterLog,
+  getUserLogs,
+  deleteUserProfile,
+  getAllUsers,
+  getDailySummaryByDate,
+  getPeriodSummary,
+  isSupabaseActive,
+  getSupabaseConfig,
+  saveCustomSupabaseConfig
+} from './database';
 
 // Preset hydration limits
 const DAILY_GOAL_DEFAULT = 2500; // in ml
@@ -71,6 +85,46 @@ export default function App() {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('water_token'));
   const [email, setEmail] = useState<string | null>(() => localStorage.getItem('water_email'));
   const [profile, setProfile] = useState<UserProfile | null>(null);
+
+  // ---- DATABASE & SUPABASE CONNECTION CONFIG ----
+  const [showConfigPanel, setShowConfigPanel] = useState(false);
+  const [dbConfig, setDbConfig] = useState(() => getSupabaseConfig());
+  const [supaUrlInput, setSupaUrlInput] = useState(() => dbConfig.url);
+  const [supaKeyInput, setSupaKeyInput] = useState(() => dbConfig.key);
+
+  const handleSaveDbConfig = (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      saveCustomSupabaseConfig(supaUrlInput, supaKeyInput);
+      const conf = getSupabaseConfig();
+      setDbConfig(conf);
+      showToast('Configurações do Supabase salvas com sucesso! Redirecionando conexões...', 'success');
+      setShowConfigPanel(false);
+      // Hot refresh rankings & logs
+      fetchRankings();
+      if (token) {
+        fetchSessionProfile();
+        fetchLogs();
+      }
+    } catch (err: any) {
+      showToast(`Erro ao salvar configurações: ${err.message}`, 'error');
+    }
+  };
+
+  const handleClearDbConfig = () => {
+    saveCustomSupabaseConfig('', '');
+    const conf = getSupabaseConfig();
+    setDbConfig(conf);
+    setSupaUrlInput('');
+    setSupaKeyInput('');
+    showToast('Modo de banco local (offline) ativado para este navegador.', 'info');
+    setShowConfigPanel(false);
+    fetchRankings();
+    if (token) {
+      fetchSessionProfile();
+      fetchLogs();
+    }
+  };
   
   // ---- AUTH INTERACTION ----
   const [authEmailInput, setAuthEmailInput] = useState('');
@@ -158,23 +212,17 @@ export default function App() {
   const fetchSessionProfile = async () => {
     if (!token) return;
     try {
-      const res = await fetch('/api/auth/me', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setProfile(data.profile);
-        if (data.profile) {
-          setSetupUsername(data.profile.username);
-          setSetupAvatar(data.profile.avatar);
-        }
+      const user = await getUserByEmail(token);
+      if (user) {
+        setProfile(user);
+        setSetupUsername(user.username);
+        setSetupAvatar(user.avatar);
       } else {
-        handleLogout();
+        // Logged in but profile was not created yet
+        setProfile(null);
       }
     } catch (error) {
-      showToast('Erro de conexão ao carregar perfil.', 'error');
+      showToast('Erro ao carregar perfil.', 'error');
     }
   };
 
@@ -183,15 +231,9 @@ export default function App() {
     if (!token) return;
     setHistoryLoading(true);
     try {
-      const res = await fetch('/api/water/history', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setLogs(data.logs);
-      }
+      const userLogs = await getUserLogs(token);
+      const sorted = userLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setLogs(sorted);
     } catch (error) {
       console.error(error);
     } finally {
@@ -203,15 +245,47 @@ export default function App() {
   const fetchRankings = async (silent = false) => {
     if (!silent) setRankingLoading(true);
     try {
-      const u = new URL('/api/water/ranking', window.location.origin);
-      u.searchParams.append('period', period);
-      u.searchParams.append('date', selectedLogDate);
+      const users = await getAllUsers();
+      let summary: Record<string, number> = {};
 
-      const res = await fetch(u.toString());
-      if (res.ok) {
-        const data = await res.json();
-        setRanking(data.ranking);
+      if (period === 'today') {
+        summary = await getDailySummaryByDate(selectedLogDate);
+      } else if (period === 'week') {
+        const targetDate = new Date(selectedLogDate);
+        const startDateObj = new Date(targetDate);
+        startDateObj.setDate(targetDate.getDate() - 6);
+        const startDate = startDateObj.toISOString().split('T')[0];
+        summary = await getPeriodSummary(startDate, selectedLogDate);
+      } else if (period === 'month') {
+        const targetDate = new Date(selectedLogDate);
+        const startDateObj = new Date(targetDate);
+        startDateObj.setDate(targetDate.getDate() - 29);
+        const startDate = startDateObj.toISOString().split('T')[0];
+        summary = await getPeriodSummary(startDate, selectedLogDate);
+      } else {
+        summary = await getPeriodSummary('1970-01-01', '9999-12-31');
       }
+
+      const rankingList = Object.entries(users).map(([email, userProfile]) => {
+        const totalAmount = summary[email] || 0;
+        return {
+          email: userProfile.email,
+          username: userProfile.username,
+          avatar: userProfile.avatar,
+          totalAmount,
+        };
+      });
+
+      const activeRankers = rankingList.filter((item) => item.username);
+
+      activeRankers.sort((a, b) => {
+        if (b.totalAmount !== a.totalAmount) {
+          return b.totalAmount - a.totalAmount;
+        }
+        return a.username.localeCompare(b.username);
+      });
+
+      setRanking(activeRankers);
     } catch (error) {
       console.error(error);
       if (!silent) showToast('Erro ao atualizar ranking coletivo.', 'error');
@@ -220,7 +294,7 @@ export default function App() {
     }
   };
 
-  // Handle passwordless verification code request
+  // Handle direct 1-step passwordless login (extremely simple & perfect for friends!)
   const handleRequestCode = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!authEmailInput || !authEmailInput.includes('@')) {
@@ -228,68 +302,33 @@ export default function App() {
       return;
     }
 
+    const cleanEmail = authEmailInput.toLowerCase().trim();
     setAuthLoading(true);
-    setDebugCode(null);
     try {
-      const res = await fetch('/api/auth/request-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: authEmailInput.toLowerCase().trim() }),
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        setIsCodeRequested(true);
-        setEmail(authEmailInput.toLowerCase().trim());
-        if (data.debugCode) {
-          setDebugCode(data.debugCode);
-          setAuthCodeInput(data.debugCode);
-        }
-        showToast('Código enviado com sucesso!', 'success');
+      const user = await getUserByEmail(cleanEmail);
+      setEmail(cleanEmail);
+      setToken(cleanEmail); // Set email as token directly!
+      if (user) {
+        setProfile(user);
+        setSetupUsername(user.username);
+        setSetupAvatar(user.avatar);
+        showToast(`Bem-vindo de volta, ${user.username}! 🥛`, 'success');
       } else {
-        showToast(data.error || 'Erro ao enviar código de autenticação.', 'error');
+        setProfile(null);
+        setSetupUsername('');
+        setSetupAvatar('💧');
+        showToast('Nenhum perfil encontrado para este e-mail. Vamos criar um agora!', 'info');
       }
-    } catch (error) {
-      showToast('Erro de comunicação com o servidor.', 'error');
+    } catch (error: any) {
+      showToast(error.message || 'Erro ao realizar login.', 'error');
     } finally {
       setAuthLoading(false);
     }
   };
 
-  // Handle submission / authentication of the 6-digit confirmation code
+  // No-op fallback since we bypass 2-step verification for simplified client usage
   const handleVerifyCode = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!authCodeInput) {
-      showToast('Insira o código de confirmação recebido.', 'error');
-      return;
-    }
-
-    setAuthLoading(true);
-    try {
-      const res = await fetch('/api/auth/verify-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email || authEmailInput, code: authCodeInput }),
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        setToken(data.token);
-        setProfile(data.profile);
-        showToast('Sucesso! Conectado.', 'success');
-        
-        setAuthEmailInput('');
-        setAuthCodeInput('');
-        setIsCodeRequested(false);
-        setDebugCode(null);
-      } else {
-        showToast(data.error || 'Código incorreto ou expirado.', 'error');
-      }
-    } catch (error) {
-      showToast('Erro de comunicação com o servidor.', 'error');
-    } finally {
-      setAuthLoading(false);
-    }
   };
 
   // Update Profile details (name and avatar emoji sticker)
@@ -302,26 +341,18 @@ export default function App() {
 
     setProfileSaving(true);
     try {
-      const res = await fetch('/api/auth/profile', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ username: setupUsername.trim(), avatar: setupAvatar })
+      const updated = await saveUser({
+        email: email || token!,
+        username: setupUsername.trim(),
+        avatar: setupAvatar,
+        createdAt: profile?.createdAt || new Date().toISOString()
       });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setProfile(data.profile);
-        showToast('Perfil atualizado com sucesso!', 'success');
-        setIsEditingProfile(false);
-        fetchRankings();
-      } else {
-        showToast(data.error || 'Erro ao atualizar perfil.', 'error');
-      }
-    } catch (error) {
-      showToast('Erro ao atualizar dados.', 'error');
+      setProfile(updated);
+      showToast('Perfil atualizado com sucesso!', 'success');
+      setIsEditingProfile(false);
+      fetchRankings();
+    } catch (error: any) {
+      showToast(error.message || 'Erro ao atualizar perfil.', 'error');
     } finally {
       setProfileSaving(false);
     }
@@ -339,27 +370,14 @@ export default function App() {
 
     setLogLoading(true);
     try {
-      const res = await fetch('/api/water/add', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ date: selectedLogDate, amount: ml })
-      });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
-        showToast(`Registrado: ${ml}ml de água! 🥛`, 'success');
-        setWaterAmountInput('');
-        setSelectedQuickAdd(null);
-        fetchLogs();
-        fetchRankings();
-      } else {
-        showToast(data.error || 'Erro ao registrar consumo.', 'error');
-      }
-    } catch (error) {
-      showToast('Falha na comunicação com o servidor.', 'error');
+      await addWaterLog(email || token!, selectedLogDate, ml);
+      showToast(`Registrado: ${ml}ml de água! 🥛`, 'success');
+      setWaterAmountInput('');
+      setSelectedQuickAdd(null);
+      fetchLogs();
+      fetchRankings();
+    } catch (error: any) {
+      showToast(error.message || 'Erro ao registrar consumo.', 'error');
     } finally {
       setLogLoading(false);
     }
@@ -375,25 +393,16 @@ export default function App() {
   const handleDeleteLog = async (logId: string) => {
     if (!confirm('Deseja excluir este registro de hidratação?')) return;
     try {
-      const res = await fetch('/api/water/delete', {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ logId })
-      });
-
-      if (res.ok) {
+      const success = await deleteWaterLog(logId, email || token!);
+      if (success) {
         showToast('Registro de água removido.', 'info');
         fetchLogs();
         fetchRankings();
       } else {
-        const data = await res.json();
-        showToast(data.error || 'Erro ao deletar registro.', 'error');
+        showToast('Erro ao remover registro.', 'error');
       }
-    } catch (error) {
-      showToast('Erro na conexão.', 'error');
+    } catch (error: any) {
+      showToast(error.message || 'Erro na conexão.', 'error');
     }
   };
 
@@ -411,16 +420,6 @@ export default function App() {
 
   // Handle safe logout
   const handleLogout = async () => {
-    try {
-      await fetch('/api/auth/logout', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-    } catch (error) {
-      // Passive ignore
-    }
     setToken(null);
     setEmail(null);
     setProfile(null);
@@ -431,18 +430,11 @@ export default function App() {
 
   // Delete current user profile and matching logs/sessions
   const handleDeleteProfile = async () => {
-    if (!confirm('ATENÇÃO DO JOGADOR: Você tem certeza absoluta que deseja apagar o seu perfil? Isso apagará definitivamente todos os seus registros de água, seu nick, seu histórico de conquistas e te removerá do ranking.')) return;
+    if (!confirm('ATENÇÃO DO JOGADOR: Você tem certeza absoluta que deseja apagar o seu perfil? Isso apagará definitivamente todos os seus registros de água, seu nick, seu histórico e te removerá do ranking.')) return;
 
     try {
-      const res = await fetch('/api/auth/profile', {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
+      const success = await deleteUserProfile(email || token!);
+      if (success) {
         showToast('Perfil excluído com sucesso!', 'success');
         setToken(null);
         setEmail(null);
@@ -451,10 +443,10 @@ export default function App() {
         setActiveTab('consumo');
         setIsEditingProfile(false);
       } else {
-        showToast(data.error || 'Erro ao deletar perfil.', 'error');
+        showToast('Erro ao deletar perfil.', 'error');
       }
-    } catch (error) {
-      showToast('Erro de conexão ao deletar perfil.', 'error');
+    } catch (error: any) {
+      showToast(error.message || 'Erro de conexão ao deletar perfil.', 'error');
     }
   };
 
@@ -621,9 +613,7 @@ export default function App() {
 
       {/* VIEWPORT CONTENT */}
       <main className="flex-grow max-w-6xl mx-auto w-full p-4 lg:p-6" id="app-main-content">
-        
-        {/* NOT LOGGED IN / AUTH PANEL */}
-        {!token && (
+         {!token && (
           <div className="max-w-md mx-auto my-12 bg-slate-950/80 p-8 rounded-[24px] border border-cyan-500/20 shadow-glow-cyan relative overflow-hidden" id="auth-panel-card">
             <div className="absolute right-0 top-0 translate-x-4 -translate-y-4 text-cyan-500/10 pointer-events-none">
               <Droplet className="w-36 h-36 fill-current" />
@@ -631,107 +621,106 @@ export default function App() {
             
             <div className="text-center mb-6">
               <span className="text-[10px] uppercase tracking-widest font-extrabold text-cyan-400 bg-cyan-950/45 px-3 py-1.5 border border-cyan-800/40 rounded-full">
-                💧 Acesso Seguro
+                💧 HydraRank
               </span>
-              <h2 className="font-display font-black text-2xl uppercase tracking-tight text-white mt-4">Participe da HydraRank</h2>
+              <h2 className="font-display font-black text-2xl uppercase tracking-tight text-white mt-4">Participe do Placar</h2>
               <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-                Insira seu e-mail para registrar e acompanhar o consumo de água do dia, mantendo sua equipe ativa e saudável.
+                Insira seu e-mail para registrar seu consumo diário e competir de forma saudável de hidratação com seus amigos!
               </p>
             </div>
 
-            {!isCodeRequested ? (
-              <form onSubmit={handleRequestCode} className="space-y-4" id="request-code-form">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">
-                    E-mail corporativo ou pessoal
-                  </label>
-                  <input
-                    type="email"
-                    value={authEmailInput}
-                    onChange={(e) => setAuthEmailInput(e.target.value)}
-                    placeholder="voce@empresa.com"
-                    required
-                    className="w-full text-xs bg-slate-900 border border-slate-800 text-white px-4 py-3.5 rounded-xl placeholder:text-slate-500 focus:outline-none focus:border-cyan-500 focus:bg-slate-950 transition-all font-medium animate-pulse"
-                  />
-                </div>
+            <form onSubmit={handleRequestCode} className="space-y-4" id="request-code-form">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">
+                  Seu E-mail
+                </label>
+                <input
+                  type="email"
+                  value={authEmailInput}
+                  onChange={(e) => setAuthEmailInput(e.target.value)}
+                  placeholder="ex: amigo@email.com"
+                  required
+                  className="w-full text-xs bg-slate-900 border border-slate-800 text-white px-4 py-3.5 rounded-xl placeholder:text-slate-500 focus:outline-none focus:border-cyan-500 focus:bg-slate-950 transition-all font-medium"
+                />
+              </div>
 
-                <button
-                  type="submit"
-                  disabled={authLoading}
-                  className="w-full bg-cyan-600 hover:bg-cyan-550 text-white font-extrabold py-3.5 rounded-xl transition-all shadow-[0_4px_12px_rgba(6,182,212,0.15)] cursor-pointer text-xs uppercase tracking-wider flex items-center justify-center gap-2 disabled:bg-slate-900 disabled:text-slate-600"
-                >
-                  {authLoading ? 'Processando...' : 'Entrar com E-mail'}
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </form>
-            ) : (
-              <form onSubmit={handleVerifyCode} className="space-y-4" id="verify-code-form">
-                <div className="rounded-xl p-3.5 bg-cyan-950/30 border border-cyan-900 text-cyan-200 flex items-start gap-2">
-                  <Clock className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5 animate-pulse" />
-                  <div className="text-[11px] leading-relaxed">
-                    Código de teste enviado para: <br />
-                    <strong className="text-white select-all font-bold">{email}</strong>
+              <button
+                type="submit"
+                disabled={authLoading}
+                className="w-full bg-cyan-600 hover:bg-cyan-550 text-white font-extrabold py-3.5 rounded-xl transition-all shadow-[0_4px_12px_rgba(6,182,212,0.15)] cursor-pointer text-xs uppercase tracking-wider flex items-center justify-center gap-2 disabled:bg-slate-900 disabled:text-slate-600 font-bold"
+              >
+                {authLoading ? 'Verificando...' : 'Entrar na HydraRank'}
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            </form>
+
+            {/* Connection Serverless Indicator & Setup panel */}
+            <div className="mt-8 pt-6 border-t border-slate-800/60 text-center">
+              <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
+                <span>Modo de Conexão:</span>
+                {dbConfig.source === 'env' ? (
+                  <span className="text-emerald-400 font-bold">● Supabase (Configurado/.env)</span>
+                ) : dbConfig.source === 'user' ? (
+                  <span className="text-emerald-450 font-bold">● Supabase (Personalizado)</span>
+                ) : (
+                  <span className="text-amber-500 font-bold">○ Offline (Local)</span>
+                )}
+              </div>
+
+              <button
+                onClick={() => setShowConfigPanel(!showConfigPanel)}
+                className="mt-3 text-[10px] text-cyan-405 hover:underline uppercase font-bold cursor-pointer tracking-wider"
+              >
+                {showConfigPanel ? '▲ Fechar Configurações do Banco' : '▼ Configurar Conexão do Supabase'}
+              </button>
+
+              {showConfigPanel && (
+                <form onSubmit={handleSaveDbConfig} className="mt-4 p-4 rounded-xl bg-slate-900 border border-slate-800 text-left space-y-3">
+                  <p className="text-[10px] text-slate-400 leading-relaxed font-sans">
+                    Você pode conectar este site de forma direta e estática ao seu Supabase. Os logs e apelidos serão persistidos na nuvem em tempo real!
+                  </p>
+                  <div>
+                    <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Supabase Project URL</label>
+                    <input
+                      type="url"
+                      value={supaUrlInput}
+                      onChange={(e) => setSupaUrlInput(e.target.value)}
+                      placeholder="https://xyz.supabase.co"
+                      required
+                      className="w-full text-[11px] bg-slate-950 border border-slate-800 text-white p-2 rounded-lg focus:outline-none focus:border-cyan-500 font-mono"
+                    />
                   </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1 mb-2">
-                    Código de Confirmação (6 dígitos)
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    value={authCodeInput}
-                    onChange={(e) => setAuthCodeInput(e.target.value)}
-                    placeholder="------"
-                    required
-                    className="w-full text-center text-2xl tracking-widest font-mono bg-slate-900 border border-slate-800 text-cyan-400 px-4 py-3.5 rounded-xl focus:outline-none focus:border-cyan-500 font-bold transition-all"
-                  />
-                </div>
-
-                {debugCode && (
-                  <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl text-xs text-slate-400" id="sandbox-code-helper">
-                    <p className="font-bold uppercase tracking-wider flex items-center gap-1 text-cyan-400 text-[10px]">
-                      ⚡ Modo Sandbox
-                    </p>
-                    <p className="mt-1 leading-relaxed text-[11px]">
-                      No ambiente de testes o código é simulado instantaneamente:
-                    </p>
-                    <div className="mt-2 flex items-center justify-between bg-slate-950 px-3 py-2 rounded-lg border border-slate-800">
-                      <code className="text-md font-bold text-cyan-405 tracking-widest font-mono">{debugCode}</code>
+                  <div>
+                    <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Supabase Anon Key</label>
+                    <input
+                      type="text"
+                      value={supaKeyInput}
+                      onChange={(e) => setSupaKeyInput(e.target.value)}
+                      placeholder="eyJhbGciOi..."
+                      required
+                      className="w-full text-[11px] bg-slate-950 border border-slate-800 text-white p-2 rounded-lg focus:outline-none focus:border-cyan-500 font-mono"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    {dbConfig.source !== 'none' && (
                       <button
                         type="button"
-                        onClick={() => setAuthCodeInput(debugCode)}
-                        className="text-[10px] font-black uppercase text-cyan-405 hover:underline cursor-pointer"
+                        onClick={handleClearDbConfig}
+                        className="text-[9px] py-1.5 px-3 bg-red-950/25 border border-red-900/40 hover:bg-red-950/40 text-red-400 rounded-lg transition-colors cursor-pointer uppercase font-bold"
                       >
-                        Auto-Completo
+                        Resetar Local
                       </button>
-                    </div>
+                    )}
+                    <button
+                      type="submit"
+                      className="bg-cyan-700 hover:bg-cyan-600 text-white font-bold text-[9px] py-1.5 px-3 rounded-lg transition-colors cursor-pointer uppercase tracking-wider"
+                    >
+                      Salvar conexões
+                    </button>
                   </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsCodeRequested(false);
-                      setDebugCode(null);
-                      setAuthCodeInput('');
-                    }}
-                    className="text-[10px] font-bold py-3.5 px-4 bg-transparent hover:bg-slate-900 border border-slate-800 text-slate-400 rounded-xl transition-all uppercase tracking-wider cursor-pointer"
-                  >
-                    Alterar E-mail
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={authLoading}
-                    className="bg-cyan-600 hover:bg-cyan-550 text-white font-extrabold py-3.5 rounded-xl text-[10px] uppercase tracking-wider transition-all shadow-[0_4px_12px_rgba(6,182,212,0.15)] cursor-pointer"
-                  >
-                    {authLoading ? 'Verificando...' : 'Confirmar'}
-                  </button>
-                </div>
-              </form>
-            )}
+                </form>
+              )}
+            </div>
           </div>
         )}
 
