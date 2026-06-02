@@ -429,6 +429,35 @@ export default function App() {
     showToast('Até logo! Mantenha-se hidratado!', 'info');
   };
 
+  // Delete current user profile and matching logs/sessions
+  const handleDeleteProfile = async () => {
+    if (!confirm('ATENÇÃO DO JOGADOR: Você tem certeza absoluta que deseja apagar o seu perfil? Isso apagará definitivamente todos os seus registros de água, seu nick, seu histórico de conquistas e te removerá do ranking.')) return;
+
+    try {
+      const res = await fetch('/api/auth/profile', {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showToast('Perfil excluído com sucesso!', 'success');
+        setToken(null);
+        setEmail(null);
+        setProfile(null);
+        setLogs([]);
+        setActiveTab('consumo');
+        setIsEditingProfile(false);
+      } else {
+        showToast(data.error || 'Erro ao deletar perfil.', 'error');
+      }
+    } catch (error) {
+      showToast('Erro de conexão ao deletar perfil.', 'error');
+    }
+  };
+
   // ---- CALCULATIONS ----
   const usersTodayLogs = logs.filter(l => l.date === selectedLogDate);
   const totalWaterLoggedToday = usersTodayLogs.reduce((sum, item) => sum + item.amount, 0);
@@ -787,6 +816,22 @@ export default function App() {
                   {profileSaving ? 'Salvando...' : 'Salvar Perfil'}
                 </button>
               </div>
+
+              {isEditingProfile && (
+                <div className="pt-4 border-t border-slate-800/60 flex flex-col gap-2">
+                  <p className="text-[10px] text-slate-500 font-mono text-center">
+                    Zona de Perigo
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleDeleteProfile}
+                    className="w-full flex items-center justify-center gap-2 border border-rose-500/30 hover:bg-rose-500/10 hover:border-rose-500/50 text-rose-405 font-bold py-3 px-4 rounded-xl transition-all cursor-pointer text-[10px] uppercase tracking-wider"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                    Apagar Perfil Definitivamente
+                  </button>
+                </div>
+              )}
             </form>
           </div>
         )}

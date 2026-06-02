@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
@@ -16,7 +19,9 @@ import {
   deleteSession,
   getAllUsers,
   UserProfile,
+  deleteUserProfile,
 } from './src/backend/database.js';
+import { sendVerificationEmail } from './src/backend/email.js';
 
 async function startServer() {
   const app = express();
@@ -61,17 +66,23 @@ async function startServer() {
       await createVerificationCode(email, code);
 
       // Print in console for server operator visibility
-      console.log(`[EMAIL SIMULATOR] Código enviado para ${email}: ${code}`);
+      console.log(`[AUTH CODE LOG] Código gerado para ${email}: ${code}`);
 
-      // We explicitly return the debugCode so the user can easily copy/paste or auto-fill during preview/testing
+      // Attempt to send real email via configured SMTP
+      const emailResult = await sendVerificationEmail(email.toLowerCase().trim(), code);
+
+      if (!emailResult.success) {
+        res.status(500).json({ error: emailResult.message });
+        return;
+      }
+
       res.json({
         success: true,
-        message: 'Código de confirmação enviado para seu e-mail (simulado)!',
-        debugCode: code, // Facilitator for instant preview testing
+        message: 'Código de confirmação enviado para seu e-mail!',
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      res.status(500).json({ error: 'Erro ao gerar o código de verificação.' });
+      res.status(500).json({ error: `Erro ao enviar o código de verificação: ${error.message || error}` });
     }
   });
 
@@ -148,6 +159,22 @@ async function startServer() {
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: 'Erro ao salvar os dados do perfil.' });
+    }
+  });
+
+  // API ROUTE: Delete current user profile and matching logs/sessions
+  app.delete('/api/auth/profile', authenticateToken, async (req, res) => {
+    const email = req.body.userEmail;
+    try {
+      const success = await deleteUserProfile(email);
+      if (success) {
+        res.json({ success: true, message: 'Seu perfil e todos os dados foram apagados com sucesso!' });
+      } else {
+        res.status(404).json({ error: 'Perfil não encontrado ou já deletado.' });
+      }
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao apagar perfil do usuário.' });
     }
   });
 
