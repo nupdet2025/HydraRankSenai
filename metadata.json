@@ -1,0 +1,6 @@
+{
+  "name": "Ranking de Água da Equipe",
+  "description": "Painel competitivo para a equipe registrar o consumo de água, contendo ranking diário/semanal/mensal, histórico e perfil com avatar personalizado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
