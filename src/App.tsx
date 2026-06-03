@@ -160,7 +160,7 @@ export default function App() {
     return saved ? parseInt(saved, 10) : DAILY_GOAL_DEFAULT;
   });
   const [isCustomGoalOpen, setIsCustomGoalOpen] = useState(false);
-  const [customGoalInput, setCustomGoalInput] = useState<number>(goal);
+  const [customGoalInput, setCustomGoalInput] = useState<number | string>(goal);
   const [selectedLogDate, setSelectedLogDate] = useState<string>(() => {
     return new Date().toISOString().split('T')[0];
   });
@@ -408,13 +408,14 @@ export default function App() {
 
   const handleUpdateGoal = (e: React.FormEvent) => {
     e.preventDefault();
-    if (customGoalInput <= 0) {
+    const parsedGoal = typeof customGoalInput === 'string' ? parseInt(customGoalInput, 10) : customGoalInput;
+    if (isNaN(parsedGoal) || parsedGoal <= 0) {
       showToast('A meta deve ser um número maior que zero.', 'error');
       return;
     }
-    setGoal(customGoalInput);
-    localStorage.setItem('water_goal', customGoalInput.toString());
-    showToast(`Meta diária definida para ${customGoalInput}ml! 🎯`, 'success');
+    setGoal(parsedGoal);
+    localStorage.setItem('water_goal', parsedGoal.toString());
+    showToast(`Meta diária definida para ${parsedGoal}ml! 🎯`, 'success');
     setIsCustomGoalOpen(false);
   };
 
@@ -800,7 +801,7 @@ export default function App() {
                             <input
                               type="number"
                               value={customGoalInput}
-                              onChange={(e) => setCustomGoalInput(Math.max(100, parseInt(e.target.value, 15) || 0))}
+                              onChange={(e) => setCustomGoalInput(e.target.value)}
                               className="w-16 text-xs font-mono font-bold bg-slate-950 border border-slate-800 rounded px-1.5 py-1 text-white focus:outline-none"
                             />
                             <button type="submit" className="text-emerald-500 hover:text-emerald-450 font-bold text-xs px-1 font-sans">✓</button>
