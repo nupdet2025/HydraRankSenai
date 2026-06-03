@@ -50,9 +50,28 @@ export function getSupabaseConfig() {
   };
 }
 
+export function sanitizeSupabaseUrl(url: string): string {
+  if (!url) return '';
+  let clean = url.trim();
+  // Remove slash at the end if present
+  while (clean.endsWith('/')) {
+    clean = clean.slice(0, -1);
+  }
+  // Check if it ends with /rest/v1 (case-insensitive)
+  if (clean.toLowerCase().endsWith('/rest/v1')) {
+    clean = clean.slice(0, -8);
+  }
+  // Clean trailing slashes again just in case
+  while (clean.endsWith('/')) {
+    clean = clean.slice(0, -1);
+  }
+  return clean;
+}
+
 export function isValidSupabaseConfig(url: string, key: string): boolean {
   if (!url || !key) return false;
-  const cleanUrl = url.trim().toLowerCase();
+  const sanitizedUrl = sanitizeSupabaseUrl(url);
+  const cleanUrl = sanitizedUrl.trim().toLowerCase();
   const cleanKey = key.trim().toLowerCase();
   
   if (
@@ -90,9 +109,10 @@ function getSupabase() {
     return null;
   }
   
-  const hash = `${url}_${key}`;
+  const sanitizedUrl = sanitizeSupabaseUrl(url);
+  const hash = `${sanitizedUrl}_${key}`;
   if (!supabaseCached || currentConfigHash !== hash) {
-    supabaseCached = createClient(url, key);
+    supabaseCached = createClient(sanitizedUrl, key);
     currentConfigHash = hash;
   }
   return supabaseCached;

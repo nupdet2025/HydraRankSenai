@@ -78,8 +78,54 @@ async function saveDb() {
 // --- Supabase Client Laziness ---
 let supabaseClient: any = null;
 
+export function sanitizeSupabaseUrl(url: string): string {
+  if (!url) return '';
+  let clean = url.trim();
+  // Remove slash at the end if present
+  while (clean.endsWith('/')) {
+    clean = clean.slice(0, -1);
+  }
+  // Check if it ends with /rest/v1 (case-insensitive)
+  if (clean.toLowerCase().endsWith('/rest/v1')) {
+    clean = clean.slice(0, -8);
+  }
+  // Clean trailing slashes again just in case
+  while (clean.endsWith('/')) {
+    clean = clean.slice(0, -1);
+  }
+  return clean;
+}
+
+export function isValidSupabaseConfig(url: string, key: string): boolean {
+  if (!url || !key) return false;
+  const sanitizedUrl = sanitizeSupabaseUrl(url);
+  const cleanUrl = sanitizedUrl.trim().toLowerCase();
+  const cleanKey = key.trim().toLowerCase();
+  
+  if (
+    cleanUrl.includes('your-supabase-project-url') ||
+    cleanUrl.includes('placeholder') ||
+    cleanUrl.includes('example.com') ||
+    !cleanUrl.startsWith('http')
+  ) {
+    return false;
+  }
+  
+  if (
+    cleanKey.includes('your-supabase-anon-key') ||
+    cleanKey.includes('placeholder') ||
+    cleanKey.length < 20
+  ) {
+    return false;
+  }
+  
+  return true;
+}
+
 export function isSupabaseActive(): boolean {
-  return !!(process.env.SUPABASE_URL && (process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY));
+  const url = process.env.SUPABASE_URL || '';
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+  return isValidSupabaseConfig(url, key);
 }
 
 function getSupabase() {
@@ -89,7 +135,8 @@ function getSupabase() {
     if (!url || !key) {
       throw new Error('Supabase client is not configured.');
     }
-    supabaseClient = createClient(url, key);
+    const sanitizedUrl = sanitizeSupabaseUrl(url);
+    supabaseClient = createClient(sanitizedUrl, key);
   }
   return supabaseClient;
 }
